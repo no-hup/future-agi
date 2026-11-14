@@ -1973,6 +1973,37 @@ func TestParseStreamData_ChunkWithUsage(t *testing.T) {
 	}
 }
 
+func TestParseStreamData_ChunkWithCachedTokens(t *testing.T) {
+	data := `{
+		"candidates": [{
+			"content": {
+				"role": "model",
+				"parts": [{"text": "final"}]
+			},
+			"finishReason": "STOP"
+		}],
+		"usageMetadata": {
+			"promptTokenCount": 100,
+			"candidatesTokenCount": 20,
+			"totalTokenCount": 120,
+			"cachedContentTokenCount": 75
+		}
+	}`
+
+	state := newStreamState("gemini-1.5-pro")
+	chunk, err := state.parseStreamData(data)
+
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if chunk.Usage == nil {
+		t.Fatal("Usage should not be nil")
+	}
+	if chunk.Usage.PromptTokensDetails == nil || string(*chunk.Usage.PromptTokensDetails) != `{"cached_tokens":75}` {
+		t.Fatalf("PromptTokensDetails = %v, want {\"cached_tokens\":75}", chunk.Usage.PromptTokensDetails)
+	}
+}
+
 func TestParseStreamData_NoFinishReason(t *testing.T) {
 	data := `{"candidates":[{"content":{"parts":[{"text":"partial"}]}}]}`
 

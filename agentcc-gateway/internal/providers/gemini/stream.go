@@ -142,6 +142,11 @@ func (s *streamState) parseStreamData(data string) (*models.StreamChunk, error) 
 			CompletionTokens: resp.UsageMetadata.CandidatesTokenCount + resp.UsageMetadata.ThoughtsTokenCount,
 			TotalTokens:      resp.UsageMetadata.TotalTokenCount,
 		}
+		if cached := resp.UsageMetadata.CachedContentTokenCount; cached != nil {
+			details, _ := json.Marshal(map[string]int{"cached_tokens": *cached})
+			raw := json.RawMessage(details)
+			chunk.Usage.PromptTokensDetails = &raw
+		}
 	}
 
 	return chunk, nil
