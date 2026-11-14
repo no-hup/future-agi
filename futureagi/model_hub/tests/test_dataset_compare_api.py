@@ -13,7 +13,7 @@ from model_hub.models.choices import (
 from model_hub.models.develop_dataset import Cell, Column, Dataset, Row
 from model_hub.models.evals_metric import EvalTemplate, UserEvalMetric
 from model_hub.views.develop_dataset import CompareDatasetsView
-from tfc.utils.storage import get_compare_local_dir
+from tfc.utils.storage import get_compare_local_dir, get_compare_metadata_path
 
 
 @pytest.fixture
@@ -357,3 +357,152 @@ def test_compare_pagination_tolerates_eval_columns_without_source_id(
     assert {column["source_id"] for column in eval_configs} == {None}
     assert result["table"][0][str(base_eval.id)]["cell_value"] == "pass"
     assert result["table"][0][str(other_eval.id)]["cell_value"] == "fail"
+
+
+@pytest.mark.django_db
+def test_compare_datasets_waits_for_pages_when_processing(
+    auth_client, compare_datasets, monkeypatch, tmp_path
+):
+    base_dataset = compare_datasets["base_dataset"]
+    other_dataset = compare_datasets["other_dataset"]
+    base_row = compare_datasets["base_row"]
+    other_row = compare_datasets["other_row"]
+
+    compare_id = uuid.uuid4()
+    monkeypatch.chdir(tmp_path)
+    compare_dir = Path(get_compare_local_dir(compare_id))
+    compare_dir.mkdir(parents=True, exist_ok=True)
+    metadata_path = Path(get_compare_metadata_path(compare_id))
+    metadata_path.write_text("{}", encoding="utf-8")
+
+    metadata_pending = {
+        "status": "processing",
+        "total_processed": 0,
+        "total_pages": 1,
+        "total_rows": 1,
+        "dataset_info": {
+            "alpha": {
+                str(base_dataset.id): str(base_row.id),
+                str(other_dataset.id): str(other_row.id),
+            }
+        },
+    }
+    metadata_ready = {
+        "status": "processing",
+        "total_processed": 1,
+        "total_pages": 1,
+        "total_rows": 1,
+        "dataset_info": {
+            "alpha": {
+                str(base_dataset.id): str(base_row.id),
+                str(other_dataset.id): str(other_row.id),
+            }
+        },
+    }
+
+    read_calls = []
+
+    def fake_read_metadata_safely(self, file_path, *args, **kwargs):
+        call_idx = len(read_calls)
+        read_calls.append(call_idx)
+        return metadata_pending if call_idx == 0 else metadata_ready
+
+    fetched_pages_at = []
+
+    def fake_get_paginated(view_self, *args, **kwargs):
+        fetched_pages_at.append(len(read_calls))
+        return {"table": [], "column_config": []}
+
+    monkeypatch.setattr(
+        CompareDatasetsView, "read_metadata_safely", fake_read_metadata_safely
+    )
+    monkeypatch.setattr(
+        CompareDatasetsView, "get_paginated_compare_json", fake_get_paginated
+    )
+    monkeypatch.setattr("time.sleep", lambda s: None)
+
+    response = auth_client.post(
+        f"/model-hub/datasets/{base_dataset.id}/compare-datasets/",
+        {
+            "compare_id": str(compare_id),
+            "page_size": 10,
+            "current_page_index": 0,
+            "base_column_name": "input",
+            "dataset_ids": [str(other_dataset.id)],
+        },
+        format="json",
+    )
+
+    assert response.status_code == status.HTTP_200_OK
+    assert len(read_calls) > 1
+    assert fetched_pages_at == [len(read_calls)]
+
+
+@pytest.mark.django_db
+def test_compare_datasets_does_not_spin_when_pages_ready(
+    auth_client, compare_datasets, monkeypatch, tmp_path
+):
+    base_dataset = compare_datasets["base_dataset"]
+    other_dataset = compare_datasets["other_dataset"]
+    base_row = compare_datasets["base_row"]
+    other_row = compare_datasets["other_row"]
+
+    compare_id = uuid.uuid4()
+    monkeypatch.chdir(tmp_path)
+    compare_dir = Path(get_compare_local_dir(compare_id))
+    compare_dir.mkdir(parents=True, exist_ok=True)
+    metadata_path = Path(get_compare_metadata_path(compare_id))
+    metadata_path.write_text("{}", encoding="utf-8")
+
+    metadata_ready = {
+        "status": "processing",
+        "total_processed": 1,
+        "total_pages": 1,
+        "total_rows": 1,
+        "dataset_info": {
+            "alpha": {
+                str(base_dataset.id): str(base_row.id),
+                str(other_dataset.id): str(other_row.id),
+            }
+        },
+    }
+
+    read_calls = []
+
+    def fake_read_metadata_safely(self, file_path, *args, **kwargs):
+        read_calls.append(len(read_calls))
+        return metadata_ready
+
+    current_sim_time = [1000.0]
+
+    def fake_time():
+        return current_sim_time[0]
+
+    def fake_sleep(s):
+        current_sim_time[0] += s
+
+    monkeypatch.setattr(
+        CompareDatasetsView, "read_metadata_safely", fake_read_metadata_safely
+    )
+    monkeypatch.setattr(
+        CompareDatasetsView,
+        "get_paginated_compare_json",
+        lambda *a, **k: {"table": [], "column_config": []},
+    )
+    monkeypatch.setattr("time.time", fake_time)
+    monkeypatch.setattr("time.sleep", fake_sleep)
+
+    response = auth_client.post(
+        f"/model-hub/datasets/{base_dataset.id}/compare-datasets/",
+        {
+            "compare_id": str(compare_id),
+            "page_size": 10,
+            "current_page_index": 0,
+            "base_column_name": "input",
+            "dataset_ids": [str(other_dataset.id)],
+        },
+        format="json",
+    )
+
+    assert response.status_code == status.HTTP_200_OK
+    assert len(read_calls) == 1

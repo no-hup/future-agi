@@ -14364,7 +14364,7 @@ class CompareDatasetsView(APIView):
                 loop_start = time.time()
                 while (
                     metadata.get("status") == "processing"
-                    and metadata.get("total_processed") >= start_page
+                    and metadata.get("total_processed", 0) < end_page - 1
                 ):
                     logger.info("waiting for files to be created")
                     metadata = self.read_metadata_safely(metadata_path)
